@@ -2,6 +2,7 @@
 #define ROVDATAPARSER_H
 
 #include "joystick.h"
+#include "qdialog.h"
 #include "qelapsedtimer.h"
 #include "qwidget.h"
 #include "rovdatatypes.h"
@@ -10,7 +11,9 @@
 #include <QMutex>
 #include <QObject>
 #include <algorithm>
-
+#define DEFAULT_kP 3
+#define DEFAULT_kI 0.01
+#define DEFAULT_kD 5
 /**
  * @brief Floating point PD regulator implementation
  *
@@ -23,8 +26,8 @@ class FPPDRegulator {
      * @param coeffP Proportional coefficient
      * @param coeffD Differential coefficient
      */
-    FPPDRegulator(float coeffP, float coeffD)
-        : kP(coeffP), kD(coeffD), lastError(0.0f), lastTime(0){};
+    FPPDRegulator(float coeffP, float coeffI, float coeffD)
+        : kP(coeffP), kI(coeffI), kD(coeffD), lastError(0.0f), uI(0.0f), target(0.0f){};
     /**
      * @brief Evaluate the regulator expression
      *
@@ -33,31 +36,36 @@ class FPPDRegulator {
      * @return float Control signal
      */
     float eval(float data);
-    void setTarget(float target);
+    void  setTarget(float target);
     void  enable();
     void  disable();
 
   private:
-  bool enabled = false;
+    bool  enabled = false;
     float kP;
-
+    float kI;
     float kD;
 
     float lastError;
+    float uI;
     float target;
 
-    int      lastData;
-    uint32_t lastTime;
+    int lastData;
 
     QElapsedTimer eTimer;
 };
 
+QT_BEGIN_NAMESPACE
+namespace Ui {
+    class DataParser;
+}
+QT_END_NAMESPACE
 
 /**
  * \brief The RovDataParser class is responsible for packing control data in
  * QByteArrays and unpacking telemetry data from them.
  */
-class RovDataParser : public QWidget {
+class RovDataParser : public QDialog {
     Q_OBJECT
   public:
     /**
@@ -102,23 +110,6 @@ class RovDataParser : public QWidget {
      * \brief Called to pack the auxiliary control data into QByteArray
      */
     void prepareAuxControl();
-
-    /**
-     * \brief Enables or disables thruster override status
-     * \param override Status
-     */
-    void enableThrustersOverride(bool override);
-
-    /**
-     * \brief Sets thrusters' overrides values
-     * \param tOverride List with values
-     */
-    void setThrustersOverride(QList<qint8> tOverride);
-    /**
-     * \brief Sets thrusters' invert values
-     * \param invert Packed invert values
-     */
-    void setThrustersOverrideInvert(qint8 invert);
 
     /**
      * \brief Sets RovAuxControl' auxiliary flags
@@ -178,31 +169,9 @@ class RovDataParser : public QWidget {
 
   private:
     /**
-     * \brief Thruster override values
+     * \brief UI
      */
-    QList<qint8> m_thrOvr = {0, 0, 0, 0, 0, 0, 0, 0};
-    /**
-     * \brief Mutex for m_thrOvr
-     */
-    QMutex       m_thrOvrMutex;
-
-    /**
-     * \brief Packed invert values for thrusters
-     */
-    qint8  m_thrOvrInv = 0b00000000;
-    /**
-     * \brief Mutex for m_thrOvrInv
-     */
-    QMutex m_thrOvrInvMutex;
-
-    /**
-     * \brief Status of the override
-     */
-    bool   m_thrOvrEnable;
-    /**
-     * \brief Mutex for m_thrOvrEnable
-     */
-    QMutex m_thrOvrEnableMutex;
+    Ui::DataParser *ui;
 
     /**
      * \brief Internally-stored RovControl struct
@@ -212,6 +181,8 @@ class RovDataParser : public QWidget {
      * \brief Mutex for m_control
      */
     QMutex                     m_controlMutex;
+
+    QTimer *overrideTelemetryUpdate;
 
     /**
      * \brief Previous CamSel state, used to switch cameras on the ROV
@@ -230,11 +201,12 @@ class RovDataParser : public QWidget {
 
     RovTelemetry m_tele;
 
+    QMutex m_teleMutex;
+
     FPPDRegulator depthReg;
     FPPDRegulator yawReg;
     FPPDRegulator rollReg;
     FPPDRegulator pitchReg;
-
 };
 
 #endif // ROVDATAPARSER_H

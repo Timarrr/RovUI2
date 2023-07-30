@@ -78,3 +78,4 @@ docs/
 .cache
 .codechecker
 compile_commands.json
+.venv

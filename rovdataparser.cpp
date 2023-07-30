@@ -1,45 +1,47 @@
 #include "rovdataparser.h"
 #include "helpers.h"
-#include "qdatetime.h"
+#include "joystick.h"
+#include "qcheckbox.h"
+#include "qdialog.h"
+#include "qnamespace.h"
 #include "qtimer.h"
+#include "qwidget.h"
+#include "ui_dataparser.h"
+#include <cmath>
 #include <cstddef>
 #include <cstring>
+#define stringify_please (x) #x
 
 inline float constrain(float val, float min, float max) {
     return val < min ? min : val > max ? max : val;
 }
 
 RovDataParser::RovDataParser(QWidget *parent)
-    : QWidget{parent}, m_thrOvrMutex(), m_thrOvrInvMutex(), m_thrOvrEnable(),
-      m_thrOvrEnableMutex(), m_control(new RovControl()), m_controlMutex(),
-      m_auxControl(new RovAuxControl), m_auxControlMutex(), depthReg(5, 5),
-      yawReg(5, 5), rollReg(5, 5), pitchReg(5, 5) {
+    : QDialog{parent}, ui(new Ui::DataParser), m_control(new RovControl()),
+      m_controlMutex(), overrideTelemetryUpdate(new QTimer(this)),
+      m_auxControl(new RovAuxControl), m_auxControlMutex(),
+      depthReg(DEFAULT_kP, DEFAULT_kI, DEFAULT_kD),
+      yawReg(DEFAULT_kP, DEFAULT_kI, DEFAULT_kD),
+      rollReg(DEFAULT_kP, DEFAULT_kI, DEFAULT_kD),
+      pitchReg(DEFAULT_kP, DEFAULT_kI, DEFAULT_kD) {
+    ui->setupUi(this);
+
     QTimer *auxTimer = new QTimer(this);
     connect(auxTimer, &QTimer::timeout, this,
             &RovDataParser::prepareAuxControl);
     auxTimer->start(64);
-}
-
-void RovDataParser::enableThrustersOverride(bool state) {
-    m_thrOvrEnableMutex.lock();
-    m_thrOvrEnable = state;
-    m_thrOvrEnableMutex.unlock();
-}
-
-void RovDataParser::setThrustersOverride(QList<qint8> override) {
-    m_thrOvrMutex.lock();
-    for (int i = 0; i < override.size(); i++) {
-
-        qDebug() << override[i];
-        this->m_thrOvr[i] = override.at(i);
-    }
-    m_thrOvrMutex.unlock();
-}
-
-void RovDataParser::setThrustersOverrideInvert(qint8 override) {
-    m_thrOvrInvMutex.lock();
-    this->m_thrOvrInv = override;
-    m_thrOvrInvMutex.unlock();
+    connect(overrideTelemetryUpdate, &QTimer::timeout, this, [this]() {
+        processTelemetry(QByteArray());
+        prepareControl(Joystick());
+    });
+    connect(ui->overrideTelemetry, &QCheckBox::clicked, this,
+            [this](bool state) {
+                if (state) {
+                    overrideTelemetryUpdate->start(16);
+                } else {
+                    overrideTelemetryUpdate->stop();
+                }
+            });
 }
 
 void RovDataParser::setAuxFlags(qint8 val) {
@@ -122,10 +124,6 @@ void RovDataParser::prepareAuxControl() {
 }
 
 void RovDataParser::prepareControl(Joystick joy) {
-    m_thrOvrEnableMutex.lock();
-    bool state = m_thrOvrEnable;
-    m_thrOvrEnableMutex.unlock();
-
     m_controlMutex.lock();
     // Buttons processing
     m_control->manipulatorOpenClose =
@@ -137,15 +135,17 @@ void RovDataParser::prepareControl(Joystick joy) {
     m_prevCamSelState = joy.buttons.CameraSelect;
 
     // Thrusters processing
-    if (state) {
-        m_thrOvrMutex.lock();
-        m_thrOvrInvMutex.lock();
-        for (int i = 0; i < 8; i++) {
-            m_control->thrusterPower[i] =
-                m_thrOvr[i] * (BIT_CHECK(m_thrOvrInv, i) ? -1 : 1);
-        }
-        m_thrOvrMutex.unlock();
-        m_thrOvrInvMutex.unlock();
+    if (ui->overrideControl->checkState() == Qt::Checked) {
+        int i = -1;
+
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox1->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox2->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox3->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox4->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox5->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox6->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox7->value();
+        m_control->thrusterPower[i++] = ui->thrusterSpinbox8->value();
     } else {
         float x = joy.axes[0] * joy.runtimeASF[0] * joy.baseASF[0] *
                   joy.directions[0] *
@@ -155,8 +155,8 @@ void RovDataParser::prepareControl(Joystick joy) {
                   (m_control->camsel == 1 ? -1 : 1); // forward-backward
         float z = joy.axes[2] * joy.runtimeASF[1] * joy.baseASF[2] *
                   joy.directions[2]; // up-down
-        float w = -1*(joy.axes[3] * joy.runtimeASF[3] * joy.baseASF[3] *
-                  joy.directions[3]);
+        float w = -1 * (joy.axes[3] * joy.runtimeASF[3] * joy.baseASF[3] *
+                        joy.directions[3]);
         float d = joy.axes[4] * joy.runtimeASF[4] * joy.baseASF[4] *
                   joy.directions[4];
         float r = joy.axes[5] * joy.runtimeASF[5] * joy.baseASF[5] *
@@ -164,26 +164,16 @@ void RovDataParser::prepareControl(Joystick joy) {
 
         float dReg  = depthReg.eval(m_tele.depth);
         float yReg  = yawReg.eval(m_tele.yaw);
-        float rReg  = yawReg.eval(m_tele.roll);
-        float pReg  = yawReg.eval(m_tele.pitch);
+        float rReg  = rollReg.eval(m_tele.roll);
+        float pReg  = pitchReg.eval(m_tele.pitch);
         z          += dReg;
         w          += yReg;
         r          += rReg;
         d          += pReg;
 
-        // qDebug() << "dReg: " << dReg << ", yReg: " << yReg << ", rReg: " << rReg
+        // qDebug() << "dReg: " << dReg << ", yReg: " << yReg << ", rReg: " <<
+        // rReg
         //          << ", pReg: " << pReg << "\n";
-
-        // enum thrusters {
-        //     lo_fr_le = 9,
-        //     lo_fr_ri = 3,
-        //     hi_fr_le = 4,
-        //     hi_fr_ri = 2,
-        //     lo_ba_le = 7,
-        //     lo_ba_ri = 5,
-        //     hi_ba_le = 8,
-        //     hi_ba_ri = 6,
-        // };
 
         // TODO: directions and axes setup
         // Horizontal thrusters
@@ -204,6 +194,21 @@ void RovDataParser::prepareControl(Joystick joy) {
             constrain(-x + y + z - w + d + r, -100, 100); // hbl
         m_control->thrusterPower[7] =
             constrain(-x - y + z + w + d - r, -100, 100); // hbr
+
+        ui->thrusterSpinbox1->setValue(m_control->thrusterPower[0]);
+        ui->thrusterSpinbox2->setValue(m_control->thrusterPower[1]);
+        ui->thrusterSpinbox3->setValue(m_control->thrusterPower[2]);
+        ui->thrusterSpinbox4->setValue(m_control->thrusterPower[3]);
+        ui->thrusterSpinbox5->setValue(m_control->thrusterPower[4]);
+        ui->thrusterSpinbox6->setValue(m_control->thrusterPower[5]);
+        ui->thrusterSpinbox7->setValue(m_control->thrusterPower[6]);
+        ui->thrusterSpinbox8->setValue(m_control->thrusterPower[7]);
+        ui->progressBarX->setValue(x);
+        ui->progressBarY->setValue(y);
+        ui->progressBarZ->setValue(z);
+        ui->progressBarW->setValue(w);
+        ui->progressBarD->setValue(d);
+        ui->progressBarR->setValue(r);
     }
     // Hats processing
     m_control->cameraRotationDelta[0] = joy.hats[1];
@@ -235,62 +240,82 @@ void RovDataParser::prepareControl(Joystick joy) {
 
 void RovDataParser::processTelemetry(QByteArray datagram) {
     RovTelemetry telemetry = RovTelemetry();
-    char         buffer[datagram.size() + 1];
-    memcpy(buffer, datagram.data(), datagram.size());
-    size_t i = 0;
+    if (ui->overrideTelemetry->checkState() == Qt::Checked) {
+        telemetry.current = ui->curSB->value();
+        telemetry.voltage = ui->voltSB->value();
+        telemetry.depth   = ui->depthSB->value();
+        telemetry.yaw     = ui->yawSB->value();
+        telemetry.roll    = ui->rollSB->value();
+        telemetry.pitch   = ui->pitchSB->value();
+        m_tele            = telemetry;
+        emit telemetryProcessed(telemetry);
+    } else {
+        char buffer[datagram.size()];
+        memcpy(buffer, datagram.data(), datagram.size());
+        size_t i = 0;
 
-    //    helpers::read_bytes(buffer, i, telemetry.version);
-    //    helpers::read_bytes(buffer, i, telemetry.depth);
-    //    helpers::read_bytes(buffer, i, telemetry.pitch);
-    //    helpers::read_bytes(buffer, i, telemetry.yaw);
-    //    helpers::read_bytes(buffer, i, telemetry.roll);
-    //    helpers::read_bytes(buffer, i, telemetry.current);
-    //    helpers::read_bytes(buffer, i, telemetry.voltage);
-    //    helpers::read_bytes(buffer, i, telemetry.cameraIndex);
-    //    helpers::read_bytes(buffer, i, telemetry.temp);
+        helpers::read_bytes(buffer, i, telemetry.version);
+        helpers::read_bytes(buffer, i, telemetry.depth);
+        helpers::read_bytes(buffer, i, telemetry.pitch);
+        helpers::read_bytes(buffer, i, telemetry.yaw);
+        helpers::read_bytes(buffer, i, telemetry.roll);
+        helpers::read_bytes(buffer, i, telemetry.current);
+        helpers::read_bytes(buffer, i, telemetry.voltage);
+        helpers::read_bytes(buffer, i, telemetry.cameraIndex);
+        helpers::read_bytes(buffer, i, telemetry.temp);
 
-    QDataStream out(&datagram, QIODevice::ReadOnly);
-    out.setFloatingPointPrecision(QDataStream::SinglePrecision);
+        QDataStream out(&datagram, QIODevice::ReadOnly);
+        out.setFloatingPointPrecision(QDataStream::SinglePrecision);
 
-    qint8 header = 0x00;
-    out >> header;
+        qint8 header = 0x00;
+        out >> header;
 
-    out >> telemetry.version;
-    out >> telemetry.depth;
-    out >> telemetry.pitch;
-    out >> telemetry.yaw;
-    out >> telemetry.roll;
-    out >> telemetry.current;
-    out >> telemetry.voltage;
-    out >> telemetry.cameraIndex;
-    out >> telemetry.temp;
+        out >> telemetry.version;
+        out >> telemetry.depth;
+        out >> telemetry.pitch;
+        out >> telemetry.yaw;
+        out >> telemetry.roll;
+        out >> telemetry.current;
+        out >> telemetry.voltage;
+        out >> telemetry.cameraIndex;
+        out >> telemetry.temp;
 
-    m_tele = telemetry;
-    emit telemetryProcessed(telemetry);
+        m_tele = telemetry;
+        emit telemetryProcessed(telemetry);
+        ui->depthSB->setValue(telemetry.depth);
+        ui->yawSB->setValue(telemetry.yaw);
+        ui->rollSB->setValue(telemetry.roll);
+        ui->pitchSB->setValue(telemetry.pitch);
+        ui->voltSB->setValue(telemetry.voltage);
+        ui->curSB->setValue(telemetry.current);
+    }
 }
 
 float FPPDRegulator::eval(float data) {
     if (!enabled)
         return 0;
-    float err = target - data;
-    float uP  = kP * err;                                           // kP(error)
-    float uD  = kD * ((err - lastError) / (eTimer.nsecsElapsed())); // kD(de/dt)
+    float err  = target - data;
+    float uP   = kP * err; // kP(error)
+    uI        += kI * err;
+    float uD =
+        kD * ((err - lastError) / (float(eTimer.elapsed()))); // kD(de/dt)
 
     // Logger::trace("Evaluated regualtor value: " + String(uP + uD) +
     //               " (uP: " + String(uP) + ", uD: " + String(uD) +
     //               ", offset: " + String(offset, 10) + ") \n\r");
-    lastError = err;
+    lastError = isnan(err) ? 0 : err;
     eTimer.start();
     lastData = data;
 
-    float u = uP + uD;
+    float u = uP + uD + uI;
 
-    return u > 127.0f ? 127.0f : u < -128.0f ? -128.0f : u;
+    return constrain(u, -100, 100);
 }
 
 void FPPDRegulator::enable() {
     lastData  = 0;
     lastError = 0;
+    uI        = 0;
     eTimer.start();
     enabled = 1;
 }

@@ -185,7 +185,7 @@ struct Joystick {
     QString joystickName;
 
     /**
-     * \brief Number of axes
+     * \brief Number of axes>
      */
     int8_t numAxes;
 

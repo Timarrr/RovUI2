@@ -16,7 +16,6 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow),
       m_cameraCapture(new RovCameraCapture(this)),
-      m_tsd(new ThrusterSetupDialog(this)),
       m_joystickHandler(new JoystickHandler(this)),
       m_jsd(new JoystickSetupDialog(this)),
       m_rovCommunication(new RovCommunication(this)),
@@ -158,10 +157,12 @@ void MainWindow::createConnections() {
             &RovCameraCommunication::updateServo);
 
     // Show setup dialogs
-    connect(ui->actionDisplay_thruster_setup_dialog, &QAction::triggered, this,
-            [this] { m_tsd->show(); });
     connect(ui->actionDisplay_joystick_setup_dialog, &QAction::triggered, this,
             [this] { m_jsd->show(); });
+    connect(ui->actionDisplay_thruster_setup_dialog, &QAction::triggered, this,
+            [this] { m_rovDataParser->show(); });
+
+    // Recalibrate IMU
     connect(ui->actionRecalibrate_IMU, &QAction::triggered,
             m_rovDataParser.data(), &RovDataParser::invalidateImuCalibration);
 
@@ -235,14 +236,6 @@ void MainWindow::createConnections() {
     // Update DataSplines with telemetry data
     connect(m_rovDataParser.data(), SIGNAL(telemetryProcessed(RovTelemetry)),
             this, SLOT(updateDatasplines(RovTelemetry)));
-
-    // TSD to DataParser
-    connect(m_tsd.data(), SIGNAL(overrideStatusChanged(bool)),
-            m_rovDataParser.data(), SLOT(enableThrustersOverride(bool)));
-    connect(m_tsd.data(), SIGNAL(thrustersOverridden(QList<qint8>)),
-            m_rovDataParser.data(), SLOT(setThrustersOverride(QList<qint8>)));
-    connect(m_tsd.data(), SIGNAL(overrideStatusChanged(bool)),
-            m_rovDataParser.data(), SLOT(enableThrustersOverride(bool)));
 
     // Menu actions
     // Light on/off

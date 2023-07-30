@@ -194,12 +194,6 @@ class MainWindow : public QMainWindow {
     QScopedPointer<RovCameraCapture> m_cameraCapture;
 
     /**
-     * \brief Thruster setup dialog object
-     * \see ThrusterSetupDialog
-     */
-    QScopedPointer<ThrusterSetupDialog> m_tsd;
-
-    /**
      * \brief Joystick handler object
      * \see JoystickHandler
      */
